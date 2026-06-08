@@ -2,11 +2,8 @@ import pandas as pd
 import numpy as np
 
 
-def calculate_momentum(price_df, lookback):
-    """
-    모멘텀 계산
-    """
-    return price_df.pct_change(lookback)
+def calculate_momentum(prices, lookback):
+    return prices.pct_change(lookback)
 
 
 def run_backtest(
@@ -19,37 +16,57 @@ def run_backtest(
     slippage=0.0005
 ):
 
-    momentum = calculate_momentum(prices, lookback)
+    momentum = calculate_momentum(
+        prices,
+        lookback
+    )
 
-    portfolio_value = [1.0]
-    dates = []
-    holdings = []
+    portfolio_value = 1.0
+
+    equity_curve = []
+    holdings_log = []
+    rebalance_log = []
     trades = []
 
-    current_asset = None
-    entry_value = 1.0
+    current_holding = None
     entry_date = None
+    entry_value = None
 
-    for i in range(lookback, len(prices)-1):
+    portfolio_dates = []
 
-        date = prices.index[i]
+    monthly_returns = prices.pct_change()
 
-        current_mom = momentum.iloc[i].dropna()
+    for i in range(lookback, len(prices) - 1):
 
-        if len(current_mom) == 0:
+        current_date = prices.index[i]
+
+        mom = momentum.iloc[i].dropna()
+
+        if len(mom) == 0:
             continue
 
-        current_mom = current_mom.sort_values(
+        mom = mom.sort_values(
             ascending=False
         )
 
+        ranking = []
+
+        for ticker in mom.index:
+
+            ranking.append(
+                (
+                    ticker,
+                    mom[ticker]
+                )
+            )
+
         selected = []
 
-        for ticker in current_mom.index:
+        for ticker in mom.index:
 
             if absolute_momentum:
 
-                if current_mom[ticker] <= (
+                if mom[ticker] <= (
                     absolute_threshold / 100
                 ):
                     continue
@@ -59,75 +76,115 @@ def run_backtest(
             if len(selected) >= top_n:
                 break
 
-        next_returns = prices.pct_change().iloc[i+1]
+        next_date = prices.index[i + 1]
 
         if len(selected) > 0:
 
             portfolio_return = (
-                next_returns[selected].mean()
+                monthly_returns.loc[
+                    next_date,
+                    selected
+                ].mean()
+            )
+
+            holding_text = ",".join(
+                selected
             )
 
         else:
 
             portfolio_return = 0
 
+            holding_text = "CASH"
+
         portfolio_return -= (
-            fee * 2 + slippage * 2
+            fee * 2
+            + slippage * 2
         )
 
-        new_value = (
-            portfolio_value[-1]
-            * (1 + portfolio_return)
+        portfolio_value *= (
+            1 + portfolio_return
         )
 
-        portfolio_value.append(new_value)
-
-        dates.append(
-            prices.index[i+1]
+        equity_curve.append(
+            portfolio_value
         )
 
-        holding_name = (
-            ",".join(selected)
-            if len(selected) > 0
-            else "CASH"
+        portfolio_dates.append(
+            next_date
         )
 
-        holdings.append(holding_name)
+        holdings_log.append(
+            {
+                "날짜": next_date,
+                "보유종목": holding_text
+            }
+        )
 
-        if current_asset != holding_name:
+        rebalance_log.append(
+            {
+                "날짜": current_date,
+                "순위": ranking[:10],
+                "선택종목": holding_text
+            }
+        )
 
-            if current_asset is not None:
+        if current_holding != holding_text:
 
-                trades.append({
-                    "매수일": entry_date,
-                    "매도일": prices.index[i+1],
-                    "종목": current_asset,
-                    "수익률":
-                    (
-                        new_value
-                        / entry_value
-                        - 1
-                    ) * 100
-                })
+            if current_holding is not None:
 
-            current_asset = holding_name
-            entry_date = prices.index[i+1]
-            entry_value = new_value
+                trade_return = (
+                    portfolio_value
+                    / entry_value
+                    - 1
+                ) * 100
+
+                trades.append(
+                    {
+                        "매수일": entry_date,
+                        "매도일": next_date,
+                        "종목": current_holding,
+                        "수익률(%)":
+                            round(
+                                trade_return,
+                                2
+                            )
+                    }
+                )
+
+            current_holding = holding_text
+
+            entry_date = next_date
+
+            entry_value = portfolio_value
 
     equity_curve = pd.Series(
-        portfolio_value[1:],
-        index=dates
-    )
-
-    holdings_df = pd.DataFrame({
-        "날짜": dates,
-        "보유종목": holdings
-    })
-
-    trades_df = pd.DataFrame(trades)
-
-    return (
         equity_curve,
-        holdings_df,
-        trades_df
+        index=portfolio_dates
     )
+
+    holdings_df = pd.DataFrame(
+        holdings_log
+    )
+
+    rebalance_df = pd.DataFrame(
+        rebalance_log
+    )
+
+    trades_df = pd.DataFrame(
+        trades
+    )
+
+    return {
+        "equity_curve":
+            equity_curve,
+
+        "holdings":
+            holdings_df,
+
+        "rebalance":
+            rebalance_df,
+
+        "trades":
+            trades_df
+    }
